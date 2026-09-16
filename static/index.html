@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenClaw 控制台 v2.3</title>
+  <!-- TailwindCSS CDN 美化 -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* 消息气泡样式 */
+    .bubble { max-width: 70%; padding: 8px 12px; border-radius: 8px; word-break: break-all; white-space: pre-wrap; }
+    .bubble-user { background: #e5e7eb; }
+    .bubble-assistant { background: #3b82f6; color: white; }
+  </style>
+</head>
+<body class="bg-gray-100 h-screen flex flex-col text-sm">
+
+  <!-- ===== 顶部导航：登录/用户信息 ===== -->
+  <header class="bg-blue-600 text-white px-4 py-2 flex items-center justify-between">
+    <h1 class="font-bold text-lg">OpenClaw 控制台</h1>
+    <div id="authArea">
+      <!-- 未登录：登录表单 -->
+      <div id="loginForm" class="flex items-center gap-2">
+        <input id="loginUser" placeholder="用户名" class="px-2 py-1 rounded text-black">
+        <input id="loginPass" type="password" placeholder="密码" class="px-2 py-1 rounded text-black">
+        <button onclick="doLogin()" class="bg-white text-blue-600 px-3 py-1 rounded font-semibold">登录</button>
+        <span class="text-xs opacity-70">或</span>
+        <input id="loginToken" placeholder="Token" class="px-2 py-1 rounded text-black">
+        <button onclick="useToken()" class="bg-blue-500 px-3 py-1 rounded">用Token</button>
+      </div>
+      <!-- 已登录：用户信息 + 登出 -->
+      <div id="userInfo" class="hidden items-center gap-3">
+        <span id="usernameLabel"></span>
+        <button onclick="logout()" class="bg-blue-500 px-3 py-1 rounded">登出</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ===== 主体：三栏布局 ===== -->
+  <main class="flex-1 flex overflow-hidden">
+
+    <!-- 左栏：Agent 列表 -->
+    <aside class="w-72 bg-white border-r flex flex-col">
+      <div class="p-2 border-b flex justify-between items-center">
+        <span class="font-semibold">Agent 列表</span>
+        <button onclick="openAddAgentModal()" class="bg-green-500 text-white px-2 py-1 rounded text-xs">+ 添加</button>
+      </div>
+      <div id="agentList" class="flex-1 overflow-y-auto">
+        <div class="p-4 text-gray-400 text-center">请先登录</div>
+      </div>
+    </aside>
+
+    <!-- 中栏：会话列表 + 消息历史 -->
+    <section class="flex-1 flex">
+      <!-- 会话列表 -->
+      <div class="w-64 bg-white border-r flex flex-col">
+        <div class="p-2 border-b font-semibold flex justify-between items-center">
+          <span>会话列表</span>
+          <button onclick="loadConversations()" class="text-xs text-blue-600 hover:underline">刷新</button>
+        </div>
+        <div id="convList" class="flex-1 overflow-y-auto">
+          <div class="p-4 text-gray-400 text-center">请选择 Agent</div>
+        </div>
+      </div>
+      <!-- 消息历史 -->
+      <div class="flex-1 flex flex-col">
+        <div class="p-2 border-b font-semibold" id="convTitle">消息历史</div>
+        <div id="msgList" class="flex-1 overflow-y-auto p-4 space-y-2 bg-gray-50">
+          <div class="text-gray-400 text-center">请选择会话</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 右栏：SOUL.md 编辑器 -->
+    <aside class="w-96 bg-white border-l flex flex-col">
+      <div class="p-2 border-b font-semibold flex justify-between items-center">
+        <span>SOUL.md 编辑器</span>
+        <button onclick="saveSoul()" class="bg-blue-500 text-white px-2 py-1 rounded text-xs">保存</button>
+      </div>
+      <div class="p-2 border-b">
+        <select id="soulAgentSelect" onchange="selectSoulAgent()" class="w-full px-2 py-1 border rounded text-xs">
+          <option value="">请选择 Agent</option>
+        </select>
+      </div>
+      <div class="flex-1 overflow-hidden p-2">
+        <textarea id="soulEditor" class="w-full h-full p-2 border rounded font-mono text-xs"
+                  placeholder="选择 Agent 后加载 SOUL.md 内容"></textarea>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- ===== 添加 Agent / 扫码弹窗 ===== -->
+  <div id="addAgentModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+    <div class="bg-white rounded p-6 flex flex-col items-center gap-3 w-96">
+      <h3 class="font-semibold">添加 Agent / 扫码绑定微信</h3>
+      <div class="w-full space-y-2">
+        <div>
+          <label class="text-xs text-gray-600">Agent ID（英文/数字，如 alice、bot2）</label>
+          <input id="newAgentId" placeholder="agent_id" class="w-full px-2 py-1 border rounded">
+        </div>
+        <div>
+          <label class="text-xs text-gray-600">显示名（可选）</label>
+          <input id="newAgentName" placeholder="如：爱丽丝" class="w-full px-2 py-1 border rounded">
+        </div>
+      </div>
+      <button onclick="startQrLogin()" class="bg-green-500 text-white px-4 py-1 rounded">获取二维码</button>
+
+      <!-- 绑定已有微信账号（不扫码，复用已登录账号） -->
+      <div class="w-full border-t pt-2 mt-1">
+        <label class="text-xs text-gray-600">或绑定已有微信账号（已登录账号无需再扫码）</label>
+        <div class="flex gap-1 mt-1">
+          <select id="existingAccountSelect" class="flex-1 px-2 py-1 border rounded text-sm min-w-0">
+            <option value="">— 加载中... —</option>
+          </select>
+          <button onclick="bindExistingAccount()" class="bg-blue-500 text-white px-3 py-1 rounded text-sm whitespace-nowrap">绑定</button>
+        </div>
+      </div>
+
+      <!-- 二维码区域（默认隐藏，点击获取二维码后显示） -->
+      <div id="qrArea" class="hidden flex flex-col items-center gap-2">
+        <img id="qrImg" class="w-64 h-64 border bg-gray-50" alt="二维码" onerror="onQrImgError(this)">
+        <p id="qrStatus" class="text-gray-600 text-center text-xs">等待扫码...</p>
+        <p class="text-xs text-gray-500 text-center leading-relaxed">
+          扫码成功后 OpenClaw 自动登记账号，<br>
+          本面板会检测到新账号并自动绑定到上面输入的 Agent ID
+        </p>
+      </div>
+
+      <button onclick="closeAddAgentModal()" class="bg-gray-300 px-4 py-1 rounded">取消</button>
+    </div>
+  </div>
+
+  <!-- ===== toast 提示 ===== -->
+  <div id="toast" class="hidden fixed bottom-4 right-4 px-4 py-2 rounded shadow-lg z-50"></div>
+
+  <script>
+    // ===== 全局状态 =====
+    let token = localStorage.getItem('token') || '';
+    let username = localStorage.getItem('username') || '';
+    let currentAgentId = null;     // 当前选中的 Agent
+    let currentConvId = null;     // 当前选中的会话
+    let knownAccountIds = new Set(); // 扫码前已知账号列表，用于检测新增
+    let qrPollTimer = null;       // 扫码后轮询账号列表的定时器
+    let qrRefreshTimer = null;   // 轮询最新二维码的定时器（跟随 OpenClaw 自动刷新）
+    let qrCountdown = 30;        // 二维码剩余有效秒数（OpenClaw 约 30 秒过期）
+    let pendingBindAgent = null; // 等待绑定的 agent_id（扫码流程中）
+    let pendingBindName = null;   // 等待绑定的 agent name
+    let soulAgents = [];          // SOUL.md 编辑器加载的 Agent 列表
+    let currentSoulAgentId = null; // 当前编辑的 Agent
+
+    // ===== API 封装 =====
+    async function api(method, path, body) {
+      const opts = { method, headers: {} };
+      if (token) opts.headers['Authorization'] = 'Bearer ' + token;
+      if (body) {
+        opts.headers['Content-Type'] = 'application/json';
+        opts.body = JSON.stringify(body);
+      }
+      const r = await fetch(path, opts);
+      if (r.status === 204) return null;
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || r.statusText);
+      return data;
+    }
+
+    // ===== toast 提示 =====
+    function toast(msg, type = 'info') {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      const bg = type === 'error' ? 'bg-red-500 text-white'
+        : type === 'success' ? 'bg-green-500 text-white'
+        : 'bg-gray-800 text-white';
+      t.className = 'fixed bottom-4 right-4 px-4 py-2 rounded shadow-lg z-50 ' + bg;
+      t.classList.remove('hidden');
+      setTimeout(() => { t.classList.add('hidden'); }, 3000);
+    }
+
+    // ===== 登录 =====
+    async function doLogin() {
+      const u = document.getElementById('loginUser').value.trim();
+      const p = document.getElementById('loginPass').value.trim();
+      if (!u || !p) { toast('请输入用户名和密码', 'error'); return; }
+      try {
+        const r = await api('POST', '/api/users/login', { username: u, password: p });
+        if (!r.ok) { toast('用户名或密码错误', 'error'); return; }
+        token = r.token; username = r.username;
+        localStorage.setItem('token', token);
+        localStorage.setItem('username', username);
+        refreshAuthUI();
+        loadAgents();
+        loadSouls();
+        toast('登录成功', 'success');
+      } catch (e) { toast('登录失败: ' + e.message, 'error'); }
+    }
+
+    function useToken() {
+      const t = document.getElementById('loginToken').value.trim();
+      if (!t) { toast('请输入 token', 'error'); return; }
+      token = t; username = '(token)';
+      localStorage.setItem('token', token);
+      refreshAuthUI();
+      loadAgents();
+      loadSouls();
+      toast('已使用 token 登录', 'success');
+    }
+
+    function logout() {
+      token = ''; username = '';
+      localStorage.removeItem('token');
+      localStorage.removeItem('username');
+      currentAgentId = null; currentConvId = null;
+      stopMsgPoll();
+      refreshAuthUI();
+      document.getElementById('agentList').innerHTML = '<div class="p-4 text-gray-400 text-center">请先登录</div>';
+      document.getElementById('convList').innerHTML = '<div class="p-4 text-gray-400 text-center">请选择 Agent</div>';
+      document.getElementById('msgList').innerHTML = '<div class="text-gray-400 text-center">请选择会话</div>';
+      document.getElementById('soulEditor').value = '';
+      document.getElementById('soulAgentSelect').innerHTML = '<option value="">请选择 Agent</option>';
+    }
+
+    function refreshAuthUI() {
+      const loggedIn = !!token;
+      document.getElementById('loginForm').classList.toggle('hidden', loggedIn);
+      const ui = document.getElementById('userInfo');
+      ui.classList.toggle('hidden', !loggedIn);
+      ui.classList.toggle('flex', loggedIn);
+      document.getElementById('usernameLabel').textContent = '当前: ' + username;
+    }
+
+    // ===== Agent 列表 =====
+    async function loadAgents() {
+      if (!token) return;
+      try {
+        const agents = await api('GET', '/api/bots/');
+        const list = document.getElementById('agentList');
+        if (agents.length === 0) {
+          list.innerHTML = '<div class="p-4 text-gray-400 text-center">暂无 Agent，点击添加</div>';
+          return;
+        }
+        list.innerHTML = agents.map(a => {
+          const active = currentAgentId === a.agent_id ? 'bg-blue-50' : '';
+          const accs = (a.bound_accounts || []).map(acc => fmtAcc(acc, true)).join(', ');
+          const model = a.model || '(默认)';
+          return `<div class="p-2 border-b cursor-pointer hover:bg-gray-50 ${active}" onclick="selectAgent('${escapeAttr(a.agent_id)}')">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-green-500"></span>
+              <span class="font-medium truncate" title="${escapeAttr(a.agent_id)}">${escapeHtml(a.name || a.agent_id)}</span>
+            </div>
+            <div class="text-xs text-gray-500 mt-0.5">ID: ${escapeHtml(a.agent_id)} | 模型: ${escapeHtml(model)}</div>
+            <div class="text-xs text-gray-500">微信号: ${accs || '未绑定'}</div>
+            <div class="flex gap-1 mt-1">
+              <button onclick="event.stopPropagation(); setAccountNote('${escapeAttr(a.agent_id)}')" class="text-xs bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded hover:bg-gray-300" title="给绑定微信号设置备注，方便识别">备注</button>
+              <button onclick="event.stopPropagation(); delAgent('${escapeAttr(a.agent_id)}')" class="text-xs bg-red-400 text-white px-2 py-0.5 rounded">删除</button>
+            </div>
+          </div>`;
+        }).join('');
+      } catch (e) { toast('加载 Agent 失败: ' + e.message, 'error'); }
+    }
+
+    async function selectAgent(agentId) {
+      currentAgentId = agentId;
+      currentConvId = null;
+      stopMsgPoll();
+      document.getElementById('msgList').innerHTML = '<div class="text-gray-400 text-center">请选择会话</div>';
+      document.getElementById('convTitle').textContent = '消息历史';
+      loadAgents();
+      loadConversations();
+    }
+
+    async function delAgent(agentId) {
+      if (!confirm(`确定删除 Agent ${agentId}？将从 openclaw.json 摘除（不影响已绑定的微信账号）`)) return;
+      try {
+        await api('DELETE', `/api/bots/${encodeURIComponent(agentId)}`);
+        if (currentAgentId === agentId) {
+          currentAgentId = null;
+          document.getElementById('convList').innerHTML = '<div class="p-4 text-gray-400 text-center">请选择 Agent</div>';
+        }
+        loadAgents();
+        loadSouls();
+        toast('已删除，网关将自动重启生效（约1-2分钟）', 'success');
+      } catch (e) { toast('删除失败: ' + e.message, 'error'); }
+    }
+
+    // ===== 添加 Agent（扫码绑定流程）=====
+    function openAddAgentModal() {
+      if (!token) { toast('请先登录', 'error'); return; }
+      document.getElementById('newAgentId').value = '';
+      document.getElementById('newAgentName').value = '';
+      document.getElementById('qrArea').classList.add('hidden');
+      document.getElementById('qrImg').src = '';
+      document.getElementById('qrStatus').textContent = '等待扫码...';
+      document.getElementById('addAgentModal').classList.remove('hidden');
+      // 预热：打开弹窗即后台启动扫码流程，点「获取二维码」时秒出
+      preheatQr();
+      // 加载未绑定账号（支持直接绑定已有微信，无需扫码）
+      loadUnboundAccounts();
+    }
+
+    // 账号可读化显示：备注 > 微信号尾部 + 登录时间 > 完整 id
+    function fmtAcc(acc, withEdit) {
+      const uid = acc.user_id || acc.account_id || '';
+      const tail = uid.length > 12 ? '…' + uid.slice(-12) : uid;
+      if (acc.note) return escapeHtml(acc.note);
+      let s = tail;
+      if (acc.saved_at) {
+        const t = new Date(acc.saved_at);
+        if (!isNaN(t)) s += `（${String(t.getMonth()+1).padStart(2,'0')}-${String(t.getDate()).padStart(2,'0')} ${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}登录）`;
+      }
+      return escapeHtml(s);
+    }
+
+    // 给 Agent 绑定的微信账号设置备注（方便识别哪个是自己）
+    async function setAccountNote(agentId) {
+      let accs = [];
+      try {
+        const all = await api('GET', '/api/bots/');
+        accs = (all.find(a => a.agent_id === agentId) || {}).bound_accounts || [];
+      } catch (e) { toast('加载失败: ' + e.message, 'error'); return; }
+      if (accs.length === 0) { toast('该 Agent 未绑定微信号', 'error'); return; }
+      const acc = accs[0];
+      const note = prompt(`给微信号 ${acc.user_id} 设置备注（如：我的主号）`, acc.note || '');
+      if (note === null) return;
+      try {
+        await api('PUT', `/api/bots/accounts/${encodeURIComponent(acc.account_id)}/note`, { note });
+        toast('备注已保存', 'success');
+        await loadAgents();
+      } catch (e) { toast('保存失败: ' + e.message, 'error'); }
+    }
+
+    // 加载未绑定账号到下拉框（删除 Agent 后原绑定账号会回到这里）
+    async function loadUnboundAccounts() {
+      const sel = document.getElementById('existingAccountSelect');
+      if (!sel) return;
+      sel.innerHTML = '<option value="">— 加载中... —</option>';
+      try {
+        const accounts = await api('GET', '/api/bots/accounts');
+        const unbound = (accounts || []).filter(a => !a.bound_agent_id);
+        if (unbound.length === 0) {
+          sel.innerHTML = '<option value="">（无未绑定账号）</option>';
+          return;
+        }
+        sel.innerHTML = unbound.map(a =>
+          `<option value="${escapeAttr(a.account_id)}">${fmtAcc(a, false)}</option>`
+        ).join('');
+      } catch (e) {
+        sel.innerHTML = '<option value="">加载失败</option>';
+      }
+    }
+
+    // 直接用已有微信账号绑定新建的 Agent（复用账号，跳过扫码）
+    async function bindExistingAccount() {
+      const agentId = document.getElementById('newAgentId').value.trim();
+      const agentName = document.getElementById('newAgentName').value.trim();
+      const accountId = document.getElementById('existingAccountSelect').value;
+      if (!agentId) { toast('请输入 Agent ID', 'error'); return; }
+      if (!/^[A-Za-z0-9_-]+$/.test(agentId)) { toast('Agent ID 只能含字母/数字/下划线/中划线', 'error'); return; }
+      if (!accountId) { toast('请选择要绑定的微信账号', 'error'); return; }
+      await bindAgent(agentId, accountId, agentName || null);
+    }
+
+    // 预热二维码：打开弹窗就提前启动（约 22s），用户填完 ID 点获取时直接复用
+    let qrPreheated = false;
+    async function preheatQr() {
+      if (!token || qrPreheated) return;
+      try {
+        const r = await api('POST', '/api/bots/qrcode');
+        if (r && r.qr_data) {
+          qrPreheated = true;
+          const qrImg = document.getElementById('qrImg');
+          const qrStatus = document.getElementById('qrStatus');
+          document.getElementById('qrArea').classList.remove('hidden');
+          qrImg.onerror = null;
+          qrImg.src = r.qr_data;
+          qrImg.onerror = onQrImgError;
+          qrCountdown = 30;
+          qrStatus.textContent = '二维码已就绪，输入 Agent ID 后点「获取二维码」即可绑定';
+          pollQrRefresh();
+        }
+      } catch (e) { /* 预热失败不阻塞，点「获取二维码」时再请求 */ }
+    }
+
+    function closeAddAgentModal() {
+      clearTimeout(qrPollTimer);
+      clearTimeout(qrRefreshTimer);
+      const hadQr = !!pendingBindAgent || qrPreheated;
+      pendingBindAgent = null;
+      pendingBindName = null;
+      qrPreheated = false;
+      document.getElementById('addAgentModal').classList.add('hidden');
+      // 通知后端取消扫码 + 恢复 gateway
+      if (hadQr) {
+        api('POST', '/api/bots/qrcode-cancel').catch(() => {});
+      }
+    }
+
+    // 图片加载失败占位
+    function onQrImgError(imgEl) {
+      if (!imgEl || !imgEl.classList) return;
+      imgEl.onerror = null;
+      imgEl.removeAttribute('src');
+      imgEl.alt = '二维码加载失败';
+      imgEl.classList.add('flex','items-center','justify-center','text-red-500','text-xs','p-2','text-center');
+    }
+
+    // 跟随 OpenClaw 自动刷新的二维码
+    // OpenClaw 的微信二维码约 30 秒过期并自动刷新，若前端仍显示旧码，
+    // 微信扫码会报「网络错误」。每 1 秒拉最新二维码，有变化就更新显示。
+    async function pollQrRefresh() {
+      clearTimeout(qrRefreshTimer);
+      try {
+        const r = await api('GET', '/api/bots/qrcode-current');
+        if (r && r.qr_data) {
+          const img = document.getElementById('qrImg');
+          if (img && img.src !== r.qr_data) {
+            img.onerror = onQrImgError;
+            img.src = r.qr_data;
+            qrCountdown = 30;
+          }
+        }
+      } catch (e) { /* 单次失败忽略，下轮重试 */ }
+      // 更新倒计时提示
+      if (qrCountdown > 0) qrCountdown--;
+      const st = document.getElementById('qrStatus');
+      if (st) {
+        const t = st.textContent;
+        if (!t.includes('失败') && !t.includes('已绑定') && !t.includes('绑定成功')) {
+          st.textContent = '请用微信扫码（约 ' + Math.max(qrCountdown, 0) + ' 秒后自动刷新，刷新后请重新扫）';
+        }
+      }
+      qrRefreshTimer = setTimeout(pollQrRefresh, 1000);
+    }
+
+    // 启动扫码登录：先记录已知账号，POST /qrcode 拿二维码
+    async function startQrLogin() {
+      const agentId = document.getElementById('newAgentId').value.trim();
+      const agentName = document.getElementById('newAgentName').value.trim();
+      if (!agentId) { toast('请输入 Agent ID', 'error'); return; }
+      if (!/^[A-Za-z0-9_-]+$/.test(agentId)) { toast('Agent ID 只能含字母/数字/下划线/中划线', 'error'); return; }
+
+      pendingBindAgent = agentId;
+      pendingBindName = agentName || null;
+
+      // 先记录当前已知账号列表（含未绑定，用于检测扫码新增）
+      try {
+        const accounts = await api('GET', '/api/bots/accounts');
+        knownAccountIds = new Set(accounts.map(a => a.account_id));
+      } catch (e) {
+        toast('获取已知账号失败：' + e.message, 'error');
+        return;
+      }
+
+      const qrImg = document.getElementById('qrImg');
+      const qrStatus = document.getElementById('qrStatus');
+
+      // 预热复用：打开弹窗时已后台拿到二维码 → 直接进入绑定流程（秒出）
+      if (qrPreheated && qrImg.getAttribute('src')) {
+        qrStatus.textContent = '二维码已就绪，请用微信扫码（约 30 秒后自动刷新）';
+        pollForNewAccount();
+        pollQrRefresh();
+        return;
+      }
+
+      // 先移除 onerror 防止清空 src 时触发
+      qrImg.onerror = null;
+      qrImg.removeAttribute('src');
+      qrImg.alt = '加载中...';
+      qrImg.classList.remove('flex','items-center','justify-center','text-red-500','text-xs','p-2','text-center');
+      qrStatus.textContent = '正在获取二维码...';
+      document.getElementById('qrArea').classList.remove('hidden');
+
+      try {
+        const r = await api('POST', '/api/bots/qrcode');
+        if (!r || !r.qr_data) {
+          qrStatus.textContent = '后端未返回二维码';
+          toast('获取二维码失败', 'error');
+          return;
+        }
+        qrImg.src = r.qr_data;
+        qrImg.onerror = onQrImgError;
+        qrCountdown = 30;
+        qrPreheated = true;
+        qrStatus.textContent = r.message || '请用微信扫码（约 30 秒后自动刷新）';
+        // 启动轮询：检测 accounts.json 中新增的 accountId
+        pollForNewAccount();
+        // 启动二维码刷新跟随（OpenClaw 二维码会定期过期刷新）
+        pollQrRefresh();
+      } catch (e) {
+        qrStatus.textContent = '获取二维码失败：' + e.message;
+        toast('获取二维码失败: ' + e.message, 'error');
+      }
+    }
+
+    // 轮询 Agent 列表，检测扫码后新增的 accountId
+    let pollFailCount = 0;
+    function pollForNewAccount() {
+      clearTimeout(qrPollTimer);
+      const pollOnce = async () => {
+        if (!pendingBindAgent) return; // 已取消或已绑定
+        if (document.getElementById('addAgentModal').classList.contains('hidden')) return;
+
+        try {
+          const accounts = await api('GET', '/api/bots/accounts');
+          pollFailCount = 0;
+          // 收集当前所有 accountId（含未绑定：扫码成功后 OpenClaw 会写入 accounts.json）
+          const currentAccounts = new Set(accounts.map(a => a.account_id));
+          // 找出新增的 accountId（扫码成功后 OpenClaw 会写入 accounts.json）
+          // 注意：只绑定「新出现」的账号；历史遗留的未绑定账号不在此绑定，
+          // 避免用户还未扫码时把旧账号误绑到新 Agent。
+          const newIds = [...currentAccounts].filter(id => !knownAccountIds.has(id));
+          if (newIds.length > 0) {
+            // 扫码成功，拿到新 accountId
+            const newAccountId = newIds[0];
+            document.getElementById('qrStatus').textContent = '扫码成功，正在绑定到 Agent ' + pendingBindAgent + '...';
+            await bindAgent(pendingBindAgent, newAccountId, pendingBindName);
+            return;
+          }
+          // 未发现新账号，继续轮询
+          qrPollTimer = setTimeout(pollOnce, 2000);
+        } catch (e) {
+          pollFailCount += 1;
+          if (pollFailCount >= 5) {
+            document.getElementById('qrStatus').textContent = '轮询账号列表失败：' + e.message;
+            toast('轮询账号列表连续失败，已停止', 'error');
+            return;
+          }
+          qrPollTimer = setTimeout(pollOnce, 3000);
+        }
+      };
+      qrPollTimer = setTimeout(pollOnce, 2000);
+    }
+
+    async function bindAgent(agentId, accountId, name) {
+      try {
+        await api('POST', '/api/bots/bind', {
+          agent_id: agentId,
+          account_id: accountId,
+          name: name || undefined,
+        });
+        toast('绑定成功：' + agentId + '（网关自动重启生效，约1-2分钟）', 'success');
+        pendingBindAgent = null;
+        pendingBindName = null;
+        closeAddAgentModal();
+        loadAgents();
+        loadSouls();
+      } catch (e) {
+        document.getElementById('qrStatus').textContent = '绑定失败：' + e.message;
+        toast('绑定失败: ' + e.message, 'error');
+      }
+    }
+
+    // ===== 会话列表 =====
+    async function loadConversations() {
+      if (!currentAgentId) return;
+      try {
+        const convs = await api('GET', '/api/conversations/?agent_id=' + encodeURIComponent(currentAgentId));
+        const list = document.getElementById('convList');
+        if (convs.length === 0) {
+          list.innerHTML = '<div class="p-4 text-gray-400 text-center">暂无会话</div>';
+          return;
+        }
+        list.innerHTML = convs.map(c => {
+          const updated = c.updated_at ? new Date(c.updated_at).toLocaleString() : '-';
+          const label = c.label || c.peer_id || c.conversation_id;
+          const active = currentConvId === c.conversation_id ? 'bg-blue-50' : '';
+          return `<div class="p-2 border-b cursor-pointer hover:bg-gray-50 ${active}"
+            onclick="selectConv('${escapeAttr(c.conversation_id)}','${escapeAttr(c.peer_id || label)}')">
+            <div class="font-medium truncate">${escapeHtml(label)}</div>
+            <div class="text-xs text-gray-500">${escapeHtml(c.kind||'')} | ${updated}</div>
+          </div>`;
+        }).join('');
+      } catch (e) { toast('加载会话失败: ' + e.message, 'error'); }
+    }
+
+    async function selectConv(convId, peerLabel) {
+      currentConvId = convId;
+      document.getElementById('convTitle').textContent = '与 ' + peerLabel + ' 的对话';
+      loadConversations();
+      loadMessages();
+      startMsgPoll();
+    }
+
+    // ===== 消息轮询：当前会话每 3 秒自动刷新 =====
+    let msgPollTimer = null;
+    function startMsgPoll() {
+      clearTimeout(msgPollTimer);
+      const tick = async () => {
+        if (!currentConvId || !currentAgentId) return;
+        try {
+          await loadMessages();
+        } catch (e) { /* 单次失败不中断轮询 */ }
+        if (currentConvId) msgPollTimer = setTimeout(tick, 3000);
+      };
+      msgPollTimer = setTimeout(tick, 3000);
+    }
+    function stopMsgPoll() {
+      clearTimeout(msgPollTimer);
+      msgPollTimer = null;
+    }
+
+    // ===== 消息历史 =====
+    async function loadMessages() {
+      if (!currentConvId || !currentAgentId) return;
+      try {
+        const msgs = await api('GET',
+          `/api/conversations/${encodeURIComponent(currentConvId)}/messages?agent_id=${encodeURIComponent(currentAgentId)}&limit=200`);
+        const list = document.getElementById('msgList');
+        if (msgs.length === 0) {
+          list.innerHTML = '<div class="text-gray-400 text-center">暂无消息</div>';
+          return;
+        }
+        list.innerHTML = msgs.map(m => {
+          const isUser = m.role === 'user' || m.role === 'human';
+          const ts = m.timestamp ? new Date(m.timestamp).toLocaleTimeString() : '';
+          return `<div class="flex ${isUser ? 'justify-start' : 'justify-end'}">
+            <div class="bubble ${isUser ? 'bubble-user' : 'bubble-assistant'}">${escapeHtml(m.content)}<div class="text-xs opacity-60 mt-1">${ts}</div></div>
+          </div>`;
+        }).join('');
+        list.scrollTop = list.scrollHeight;
+      } catch (e) { toast('加载消息失败: ' + e.message, 'error'); }
+    }
+
+    // ===== SOUL.md 编辑器 =====
+    async function loadSouls() {
+      if (!token) return;
+      try {
+        const souls = await api('GET', '/api/roles/');
+        soulAgents = souls;
+        const sel = document.getElementById('soulAgentSelect');
+        if (souls.length === 0) {
+          sel.innerHTML = '<option value="">暂无 Agent</option>';
+          document.getElementById('soulEditor').value = '';
+          return;
+        }
+        sel.innerHTML = souls.map(s =>
+          `<option value="${escapeAttr(s.agent_id)}">${escapeHtml(s.name || s.agent_id)}</option>`
+        ).join('');
+        // 默认选第一个
+        if (!currentSoulAgentId || !souls.find(s => s.agent_id === currentSoulAgentId)) {
+          currentSoulAgentId = souls[0].agent_id;
+        }
+        sel.value = currentSoulAgentId;
+        selectSoulAgent();
+      } catch (e) { toast('加载 SOUL.md 失败: ' + e.message, 'error'); }
+    }
+
+    function selectSoulAgent() {
+      const sel = document.getElementById('soulAgentSelect');
+      currentSoulAgentId = sel.value;
+      const a = soulAgents.find(s => s.agent_id === currentSoulAgentId);
+      document.getElementById('soulEditor').value = a ? (a.content || '') : '';
+    }
+
+    async function saveSoul() {
+      if (!currentSoulAgentId) { toast('请先选择 Agent', 'error'); return; }
+      const content = document.getElementById('soulEditor').value;
+      try {
+        await api('PUT', '/api/roles/' + encodeURIComponent(currentSoulAgentId), { content });
+        // 更新本地缓存
+        const a = soulAgents.find(s => s.agent_id === currentSoulAgentId);
+        if (a) a.content = content;
+        toast('SOUL.md 已保存', 'success');
+      } catch (e) { toast('保存失败: ' + e.message, 'error'); }
+    }
+
+    // ===== 工具函数 =====
+    function escapeHtml(s) {
+      return String(s == null ? '' : s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+    }
+    function escapeAttr(s) {
+      return String(s == null ? '' : s).replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    }
+
+    // ===== 初始化 =====
+    refreshAuthUI();
+    if (token) { loadAgents(); loadSouls(); }
+  </script>
+</body>
+</html>

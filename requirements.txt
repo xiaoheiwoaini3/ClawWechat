@@ -1,0 +1,21 @@
+# Web framework
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+
+# ORM
+sqlalchemy>=2.0.0
+
+# HTTP client (iLink Bot API + AI API)
+httpx>=0.27.0
+
+# AI (OpenAI compatible SDK)
+openai>=1.40.0
+
+# QR code generation (scan binding visualization)
+qrcode[pil]>=7.4
+
+# .env loader
+python-dotenv>=1.0.0
+
+# Data validation (FastAPI built-in, pinned to avoid drift)
+pydantic>=2.6.0
