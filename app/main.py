@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.database import init_db
-from app.routers import bots, conversations, roles, users
+from app.routers import admin, bots, conversations, roles, users
 
 # 日志配置
 logging.basicConfig(
@@ -69,6 +69,7 @@ app.add_middleware(
 
 # 注册路由
 app.include_router(users.router, prefix="/api/users", tags=["users"])
+app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
 app.include_router(bots.router, prefix="/api/bots", tags=["bots"])
 app.include_router(roles.router, prefix="/api/roles", tags=["roles"])
 app.include_router(conversations.router, prefix="/api/conversations", tags=["conversations"])

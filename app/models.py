@@ -128,7 +128,8 @@ class User(Base):
 
     username 唯一；password_hash 用 pbkdf2_hmac 哈希（格式: salt_b64$iterations$hash_b64）；
     role: admin（可管理用户/Bot）/ user（普通用户，绑定自己的 Bot）。
-    约定 Bot.owner_wxid == User.username，实现多用户隔离。
+    status: pending（刚注册待审批）/ approved（已批准可用）/ rejected（被拒绝）/ disabled（被禁用）。
+    ai_config: JSON 字符串 {"base_url":..,"api_key":..,"model":..}，空则用全局 .env 默认。
     """
 
     __tablename__ = "users"
@@ -141,4 +142,34 @@ class User(Base):
         comment="pbkdf2_hmac 哈希，格式 salt_b64$iterations$hash_b64",
     )
     role = Column(String(16), nullable=False, default="user", comment="admin / user")
+    status = Column(
+        String(16),
+        nullable=False,
+        default="pending",
+        index=True,
+        comment="pending / approved / rejected / disabled",
+    )
+    display_name = Column(String(64), nullable=True, comment="显示名（备注）")
+    ai_config = Column(Text, nullable=True, comment="JSON：用户自定义 AI 配置，空则用全局默认")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class AgentOwnership(Base):
+    """OpenClaw Agent ↔ 控制台用户 归属映射。
+
+    OpenClaw 的 agents 本身不区分用户，本表做隔离：
+    每个 agent_id 只能属于一个 user_id；普通用户只能看到/操作自己拥有的 Agent。
+    admin 不受此限制（全局视角）。
+    """
+
+    __tablename__ = "agent_ownership"
+
+    id = Column(Integer, primary_key=True, index=True)
+    agent_id = Column(String(64), nullable=False, unique=True, index=True)
+    owner_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

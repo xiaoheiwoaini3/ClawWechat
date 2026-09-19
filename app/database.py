@@ -63,11 +63,34 @@ def get_db():
 
 
 def init_db() -> None:
-    """启动时建表（开发用，生产应使用 Alembic 迁移）。"""
+    """启动时建表 + 轻量迁移（开发用，生产应使用 Alembic 迁移）。"""
     # 延迟 import 触发模型注册，避免循环引用
     from app import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    _migrate_users_table()
+
+
+def _migrate_users_table() -> None:
+    """给老 users 表补加新列（status / display_name / ai_config）。
+
+    SQLite 的 ALTER TABLE ADD COLUMN 不支持 IF NOT EXISTS，
+    用 PRAGMA table_info 检查列是否已存在，缺哪个加哪个。
+    """
+    from sqlalchemy import text
+
+    expected = {
+        "status": "VARCHAR(16) DEFAULT 'pending' NOT NULL",
+        "display_name": "VARCHAR(64)",
+        "ai_config": "TEXT",
+    }
+    with engine.begin() as conn:
+        cols = {row[1] for row in conn.execute(text("PRAGMA table_info(users)"))}
+        for col, ddl in expected.items():
+            if col not in cols:
+                conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {ddl}"))
+        # 老数据迁移：已有 admin 账号自动置为 approved（新列默认是 pending）
+        conn.execute(text("UPDATE users SET status='approved' WHERE role='admin' AND status='pending'"))
 
 
 # ============================================================
@@ -301,3 +324,162 @@ def init_admin_if_absent() -> dict:
             "created": True,
             "message": "已创建管理员: %s" % admin_username,
         }
+
+
+# ============================================================
+# 多用户：注册审批 / 状态变更 / Agent 归属
+# ============================================================
+def register_user(username: str, password: str, display_name: str = "") -> User:
+    """用户自助注册（pending 状态，等待管理员审批）。username 重复抛 ValueError。"""
+    from app.models import User
+
+    with SessionLocal() as db:
+        existing = db.query(User).filter(User.username == username).first()
+        if existing:
+            raise ValueError("用户名 %s 已存在" % username)
+        user = User(
+            username=username,
+            password_hash=hash_password(password),
+            role="user",
+            status="pending",
+            display_name=display_name or None,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        return user
+
+
+def get_user_by_id(user_id: int) -> User | None:
+    """按 id 查用户。"""
+    from app.models import User
+
+    with SessionLocal() as db:
+        return db.get(User, user_id)
+
+
+def set_user_status(user_id: int, status: str) -> bool:
+    """改用户状态（approved/rejected/disabled/pending）。"""
+    from app.models import User
+
+    with SessionLocal() as db:
+        u = db.get(User, user_id)
+        if not u:
+            return False
+        u.status = status
+        db.commit()
+        return True
+
+
+def set_user_password(user_id: int, new_password: str) -> bool:
+    """管理员重置用户密码。"""
+    from app.models import User
+
+    with SessionLocal() as db:
+        u = db.get(User, user_id)
+        if not u:
+            return False
+        u.password_hash = hash_password(new_password)
+        db.commit()
+        return True
+
+
+def set_user_display_name(user_id: int, name: str) -> bool:
+    """改用户显示名。"""
+    from app.models import User
+
+    with SessionLocal() as db:
+        u = db.get(User, user_id)
+        if not u:
+            return False
+        u.display_name = name or None
+        db.commit()
+        return True
+
+
+def has_any_admin() -> bool:
+    """是否已有管理员账号（决定是否需要首次初始化引导）。"""
+    from app.models import User
+
+    with SessionLocal() as db:
+        return db.query(User).filter(User.role == "admin").first() is not None
+
+
+def setup_first_admin(username: str, password: str) -> User:
+    """首次初始化管理员（仅在无任何 admin 时可用）。"""
+    from app.models import User
+
+    with SessionLocal() as db:
+        if db.query(User).filter(User.role == "admin").first():
+            raise ValueError("管理员已存在，不能重复初始化")
+        u = User(
+            username=username,
+            password_hash=hash_password(password),
+            role="admin",
+            status="approved",
+        )
+        db.add(u)
+        db.commit()
+        db.refresh(u)
+        return u
+
+
+# ---------- Agent 归属 ----------
+def set_agent_owner(agent_id: str, user_id: int) -> None:
+    """把 Agent 归属到指定用户（已存在则更新 owner）。"""
+    from app.models import AgentOwnership
+
+    with SessionLocal() as db:
+        row = (
+            db.query(AgentOwnership)
+            .filter(AgentOwnership.agent_id == agent_id)
+            .first()
+        )
+        if row is None:
+            db.add(AgentOwnership(agent_id=agent_id, owner_user_id=user_id))
+        else:
+            row.owner_user_id = user_id
+        db.commit()
+
+
+def get_agent_owner_id(agent_id: str) -> int | None:
+    """查 Agent 的 owner_user_id，未归属返回 None。"""
+    from app.models import AgentOwnership
+
+    with SessionLocal() as db:
+        row = (
+            db.query(AgentOwnership)
+            .filter(AgentOwnership.agent_id == agent_id)
+            .first()
+        )
+        return row.owner_user_id if row else None
+
+
+def list_user_agent_ids(user_id: int) -> list[str]:
+    """列出某用户拥有的所有 agent_id。"""
+    from app.models import AgentOwnership
+
+    with SessionLocal() as db:
+        rows = (
+            db.query(AgentOwnership.agent_id)
+            .filter(AgentOwnership.owner_user_id == user_id)
+            .all()
+        )
+        return [r[0] for r in rows]
+
+
+def list_all_ownerships() -> list[dict]:
+    """列出全部 Agent 归属（管理员视图）。返回 [{agent_id, owner_user_id, owner_username}]。"""
+    from app.models import AgentOwnership, User
+
+    with SessionLocal() as db:
+        rows = db.query(AgentOwnership).all()
+        result = []
+        for r in rows:
+            u = db.get(User, r.owner_user_id)
+            result.append({
+                "agent_id": r.agent_id,
+                "owner_user_id": r.owner_user_id,
+                "owner_username": u.username if u else None,
+            })
+        return result

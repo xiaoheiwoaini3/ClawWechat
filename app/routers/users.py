@@ -1,14 +1,14 @@
-"""用户管理：数据库持久化 + HMAC token 鉴权。
+"""用户认证与自助接口。
 
-接口：
-- POST /init          首次初始化管理员（无鉴权，仅首次可用）
-- POST /login         用户名密码登录，返回签名 token
-- POST /users         创建用户（需 admin）
-- GET  /users         列出用户（需 admin）
-- DELETE /users/{id}  删除用户（需 admin）
+路由前缀：/api/users
+- POST /setup-admin    首次初始化管理员（无 admin 时可用，引导页用）
+- GET  /setup-status   是否已初始化管理员（前端决定显示引导页还是登录页）
+- POST /register       用户自助注册（pending，待审批）
+- POST /login          登录（校验密码 + 状态）
+- GET  /me             当前登录用户信息（含 role/status）
+- POST /change-password  修改自己的密码（可选）
 
-鉴权：Authorization: Bearer <token>，token 由 make_token 生成（HMAC 签名 + 24h 过期）。
-密码：pbkdf2_hmac 哈希存储，verify_password 校验。
+管理员操作见 app/routers/admin.py（/api/admin/*）。
 """
 from datetime import datetime
 from typing import Optional
@@ -16,139 +16,131 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, ConfigDict
 
+from app import database as db
 from app.database import (
-    create_user as db_create_user,
-    delete_user as db_delete_user,
     get_user_by_username,
-    init_admin_if_absent,
-    list_users as db_list_users,
+    has_any_admin,
     make_token,
     parse_token,
+    register_user,
+    setup_first_admin,
     verify_password,
 )
+from app.deps import get_current_user
 
 router = APIRouter()
 
 
 # ============ 请求/响应模型 ============
 class LoginIn(BaseModel):
-    """登录请求。"""
     username: str
     password: str
 
 
 class LoginOut(BaseModel):
-    """登录结果。"""
     ok: bool
     token: Optional[str] = None
     role: Optional[str] = None
     username: Optional[str] = None
+    status: Optional[str] = None
+    message: Optional[str] = None
 
 
-class UserCreateIn(BaseModel):
-    """创建用户请求。"""
+class RegisterIn(BaseModel):
     username: str
     password: str
-    role: str = "user"  # admin / user
+    display_name: str = ""
 
 
-class UserOut(BaseModel):
-    """用户信息（不含密码哈希）。"""
+class SetupAdminIn(BaseModel):
+    username: str
+    password: str
+
+
+class MeOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-
     id: int
     username: str
     role: str
+    status: str
+    display_name: Optional[str] = None
+    ai_config: Optional[str] = None
     created_at: datetime
 
 
-class InitOut(BaseModel):
-    """初始化结果。"""
-    ok: bool
-    created: bool
-    message: str
-
-
-# ============ 鉴权依赖 ============
-def require_admin(authorization: Optional[str] = Header(None)) -> str:
-    """校验 Bearer token，要求是 admin 用户。返回 username。"""
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(401, "缺少 Authorization: Bearer <token>")
-    token = authorization.removeprefix("Bearer ").strip()
-    username = parse_token(token)
-    if not username:
-        raise HTTPException(401, "token 无效或已过期")
-    user = get_user_by_username(username)
-    if not user:
-        raise HTTPException(401, "用户不存在")
-    if user.role != "admin":
-        raise HTTPException(403, "需要管理员权限")
-    return username
+class ChangePasswordIn(BaseModel):
+    old_password: str
+    new_password: str
 
 
 # ============ 接口 ============
-@router.post("/init", response_model=InitOut)
-def init_admin():
-    """初始化管理员账号（读 .env 的 ADMIN_USERNAME/ADMIN_PASSWORD）。
+@router.get("/setup-status")
+def setup_status():
+    """前端决定显示引导页还是登录页：是否已有管理员。"""
+    return {"has_admin": has_any_admin()}
 
-    无鉴权：仅用于首次部署创建管理员。已存在 admin 时跳过。
-    生产环境初始化后建议限制该接口（如限内网或下线）。
-    """
+
+@router.post("/setup-admin")
+def setup_admin(payload: SetupAdminIn):
+    """首次初始化管理员（仅无 admin 时可用）。"""
+    if has_any_admin():
+        raise HTTPException(400, "管理员已初始化，不能重复设置")
+    if len(payload.username) < 2 or len(payload.password) < 6:
+        raise HTTPException(400, "用户名至少 2 位，密码至少 6 位")
     try:
-        result = init_admin_if_absent()
-        return InitOut(**result)
-    except Exception as e:
-        raise HTTPException(500, "初始化管理员失败: %s" % e)
+        u = setup_first_admin(payload.username, payload.password)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "username": u.username, "token": make_token(u.username)}
+
+
+@router.post("/register")
+def register(payload: RegisterIn):
+    """用户自助注册：创建 pending 账号，等待管理员审批。"""
+    if len(payload.username) < 2 or len(payload.password) < 6:
+        raise HTTPException(400, "用户名至少 2 位，密码至少 6 位")
+    try:
+        u = register_user(payload.username, payload.password, payload.display_name)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "message": "注册成功，请等待管理员审批", "username": u.username}
 
 
 @router.post("/login", response_model=LoginOut)
 def login(payload: LoginIn):
-    """用户名密码登录，校验通过返回签名 token。"""
+    """用户名密码登录，校验通过返回 token。未批准/被拒/被禁用都拒绝登录。"""
     user = get_user_by_username(payload.username)
     if not user or not verify_password(payload.password, user.password_hash):
-        # 统一返回 ok=False，不暴露是用户名还是密码错
-        return LoginOut(ok=False)
+        return LoginOut(ok=False, message="用户名或密码错误")
+    # 状态拦截
+    if user.status == "pending":
+        return LoginOut(ok=False, status=user.status, message="账号待管理员审批")
+    if user.status == "rejected":
+        return LoginOut(ok=False, status=user.status, message="账号申请已被拒绝")
+    if user.status == "disabled":
+        return LoginOut(ok=False, status=user.status, message="账号已被禁用")
+    # approved
     return LoginOut(
         ok=True,
         token=make_token(user.username),
         role=user.role,
         username=user.username,
+        status=user.status,
     )
 
 
-@router.post("/users", response_model=UserOut, status_code=201)
-def create_user(
-    payload: UserCreateIn,
-    _admin: str = Depends(require_admin),
-):
-    """创建用户（需 admin）。"""
-    # role 校验：只允许 admin/user
-    if payload.role not in ("admin", "user"):
-        raise HTTPException(400, "role 必须是 admin 或 user")
-    try:
-        user = db_create_user(payload.username, payload.password, payload.role)
-    except ValueError as e:
-        # username 重复
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        raise HTTPException(500, "创建用户失败: %s" % e)
+@router.get("/me", response_model=MeOut)
+def me(user=Depends(get_current_user)):
+    """当前登录用户信息。"""
     return user
 
 
-@router.get("/users", response_model=list[UserOut], dependencies=[Depends(require_admin)])
-def list_users():
-    """列出所有用户（需 admin）。"""
-    return db_list_users()
-
-
-@router.delete("/users/{user_id}", status_code=204)
-def delete_user(user_id: int, admin: str = Depends(require_admin)):
-    """删除用户（需 admin）。禁止删除自己。"""
-    # 防止管理员删除自己
-    admin_user = get_user_by_username(admin)
-    if admin_user and admin_user.id == user_id:
-        raise HTTPException(400, "不能删除当前登录的管理员账号")
-    ok = db_delete_user(user_id)
-    if not ok:
-        raise HTTPException(404, "用户不存在")
-    return None
+@router.post("/change-password")
+def change_password(payload: ChangePasswordIn, user=Depends(get_current_user)):
+    """修改自己的密码。"""
+    if not verify_password(payload.old_password, user.password_hash):
+        raise HTTPException(400, "原密码错误")
+    if len(payload.new_password) < 6:
+        raise HTTPException(400, "新密码至少 6 位")
+    db.set_user_password(user.id, payload.new_password)
+    return {"ok": True}
