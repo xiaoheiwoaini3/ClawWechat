@@ -595,12 +595,14 @@
           account_id: accountId,
           name: name || undefined,
         });
-        toast('绑定成功：' + agentId + '（网关自动重启生效，约1-2分钟）', 'success');
+        toast('绑定成功：' + agentId, 'success');
         pendingBindAgent = null;
         pendingBindName = null;
         closeAddAgentModal();
-        loadAgents();
-        loadSouls();
+        await loadAgents();
+        await loadSouls();
+        // 自动选中新 Agent，相当于跳转到它的首页
+        selectAgent(agentId);
       } catch (e) {
         document.getElementById('qrStatus').textContent = '绑定失败：' + e.message;
         toast('绑定失败: ' + e.message, 'error');
